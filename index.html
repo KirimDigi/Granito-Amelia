@@ -2910,12 +2910,12 @@ jQuery(document).ready(function($) {
         });
     }
 
-    function doFetch(showListAfterLoad, isSilentRefresh) {
-        if (isLoadingComments) return;
-        isLoadingComments = true;
-        if (showListAfterLoad && !isSilentRefresh) {
+    function doFetch(showListAfterLoad, isSilentRefresh, retryCount) {
+        retryCount = retryCount || 0;
+        if (isLoadingComments && retryCount === 0) return;
+        if (retryCount === 0) isLoadingComments = true;
+        if (showListAfterLoad && !isSilentRefresh && retryCount === 0) {
             $btnShow.prop('disabled', true).css('opacity','0.6').html('<i class="fa-solid fa-spinner fa-spin" style="margin-right:6px;"></i> Memuat...');
-            // Hanya tampilkan loading jika belum ada cache sama sekali
             if (cachedData === null) {
                 $container.html('<li style="list-style: none; text-align: center; padding: 20px 0;"><span style="color: #888; font-style: italic; font-family: \'Poppins\', sans-serif;"><i class="fa-solid fa-spinner fa-spin" style="margin-right:6px;"></i>Memuat ucapan...</span></li>').show();
             }
@@ -2925,7 +2925,7 @@ jQuery(document).ready(function($) {
             url: appsScriptUrl + '?t=' + Date.now(),
             type: 'GET',
             dataType: 'json',
-            timeout: 15000,
+            timeout: 30000,
             cache: false,
             success: function(response) {
                 if (response && response.status === 'success' && Array.isArray(response.data)) {
@@ -2941,25 +2941,6 @@ jQuery(document).ready(function($) {
                 } else if (showListAfterLoad && !isSilentRefresh) {
                     $container.html('<li style="list-style:none;text-align:center;padding:20px 0;color:#c0392b;font-family:Poppins,sans-serif;">Gagal memuat. Format data tidak valid.<br><a href="#" id="retry-load" style="color:#53647c;text-decoration:underline;">Coba lagi</a></li>').show();
                 }
-            },
-            error: function(xhr, status, err) {
-                console.error("Failed to load comments", status, err);
-                if (showListAfterLoad && !isSilentRefresh) {
-                    // Jika sudah ada cache, jangan timpa dengan error - tetap tampilkan cache
-                    if (cachedData !== null) {
-                        renderComments(cachedData);
-                        $container.show();
-                        $btnShow.hide();
-                        $btnHide.show();
-                    } else {
-                        var msg = status === 'timeout' ? 'Waktu habis (server spreadsheet lambat).' : 'Gagal memuat ucapan.';
-                        $container.html('<li style="list-style:none;text-align:center;padding:20px 0;color:#c0392b;font-family:Poppins,sans-serif;">' + msg + '<br><a href="#" id="retry-load" style="color:#53647c;text-decoration:underline;">Coba lagi</a></li>').show();
-                    }
-                } else if (!showListAfterLoad) {
-                    $countSpan.text($countSpan.text() || '0');
-                }
-            },
-            complete: function(){
                 isLoadingComments = false;
                 if (showListAfterLoad && !isSilentRefresh) {
                     $btnShow.prop('disabled', false).css('opacity','1').html('Tampilkan Ucapan');
@@ -2967,6 +2948,44 @@ jQuery(document).ready(function($) {
                         e.preventDefault();
                         loadComments(true, true);
                     });
+                }
+                syncButtonStyles();
+            },
+            error: function(xhr, status, err) {
+                console.error("Failed to load comments attempt " + retryCount, status, err);
+                // Auto-retry untuk timeout / error jaringan (GAS cold start bisa 15-25 detik)
+                if (retryCount < 2 && (status === 'timeout' || status === 'error' || status === 'parsererror')) {
+                    setTimeout(function(){
+                        doFetch(showListAfterLoad, isSilentRefresh, retryCount + 1);
+                    }, 1500);
+                    return;
+                }
+                isLoadingComments = false;
+                if (showListAfterLoad && !isSilentRefresh) {
+                    if (cachedData !== null) {
+                        renderComments(cachedData);
+                        $container.show();
+                        $btnShow.hide();
+                        $btnHide.show();
+                        // Tambah notice kecil bahwa ini cache karena server lambat
+                        if (!$container.find('.cache-notice').length) {
+                            $container.prepend('<li class="cache-notice" style="list-style:none;text-align:center;padding:6px 0;font-size:0.75rem;color:#856404;background:#fff3cd;border-radius:6px;margin-bottom:10px;font-family:Poppins,sans-serif;">Menampilkan data terakhir (server lambat, coba lagi untuk refresh)</li>');
+                        }
+                    } else {
+                        var msg = status === 'timeout' ? 'Server spreadsheet sedang sibuk (cold start).' : 'Gagal memuat ucapan.';
+                        $container.html('<li style="list-style:none;text-align:center;padding:20px 0;color:#c0392b;font-family:Poppins,sans-serif;">' + msg + '<br><span style="font-size:0.8rem;color:#666;">Silakan coba lagi</span><br><a href="#" id="retry-load" style="color:#53647c;text-decoration:underline;font-weight:600;margin-top:8px;display:inline-block;">Coba Lagi</a></li>').show();
+                    }
+                    $btnShow.prop('disabled', false).css('opacity','1').html('Tampilkan Ucapan');
+                    $('#retry-load').off('click').on('click', function(e){
+                        e.preventDefault();
+                        loadComments(true, true);
+                    });
+                } else if (!showListAfterLoad) {
+                    $countSpan.text($countSpan.text() || '0');
+                    // Silent retry untuk preload gagal: coba lagi 5 detik kemudian
+                    if (cachedData === null && retryCount < 2) {
+                        setTimeout(function(){ doFetch(false, false, 1); }, 5000);
+                    }
                 }
                 syncButtonStyles();
             }
